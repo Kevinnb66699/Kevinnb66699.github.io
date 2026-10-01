@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>范存凯 Kevin · 作品集</title>
+  <meta name="description" content="范存凯 Kevin 的个人作品集：机器人、计算机视觉、AI 与 Web 项目。">
+  <meta name="color-scheme" content="light dark">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="范存凯 Kevin · 作品集">
+  <meta property="og:description" content="范存凯 Kevin 的个人作品集：机器人、计算机视觉、AI 与 Web 项目。">
+  <meta property="og:locale" content="zh_CN">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%232563eb'/%3E%3Crect x='16' y='16' width='14' height='14' rx='3' fill='%23fff'/%3E%3Crect x='34' y='16' width='14' height='14' rx='3' fill='%23fff' opacity='.6'/%3E%3Crect x='16' y='34' width='14' height='14' rx='3' fill='%23fff' opacity='.6'/%3E%3Crect x='34' y='34' width='14' height='14' rx='3' fill='%23fff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+  <script src="projects.js" defer></script>
+  <script src="main.js" defer></script>
+</head>
+<body>
+  <header class="hero container">
+    <h1 id="name" class="name"></h1>
+    <p id="tagline" class="tagline"></p>
+    <p id="bio" class="bio"></p>
+    <ul id="links" class="links" aria-label="联系方式" hidden></ul>
+  </header>
+
+  <main class="projects container">
+    <div class="section-head">
+      <h2>项目</h2>
+      <p id="count" class="count" aria-live="polite"></p>
+    </div>
+    <div id="filters" class="filters" role="group" aria-label="按类别筛选" hidden></div>
+    <ul id="grid" class="grid" role="list"></ul>
+    <p id="notice" class="notice" hidden></p>
+    <noscript><p class="notice">本站需要启用 JavaScript 才能显示内容。</p></noscript>
+  </main>
+
+  <footer class="footer container">
+    <p>© <span id="year"></span> <span id="footer-name"></span></p>
+  </footer>
+
+  <dialog id="detail" class="detail" aria-labelledby="detail-title">
+    <button id="detail-close" class="detail-close" type="button" aria-label="关闭">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+    <div id="detail-scroll" class="detail-scroll">
+      <div id="detail-media" class="detail-media"></div>
+      <div id="detail-body" class="detail-body"></div>
+    </div>
+  </dialog>
+</body>
+</html>

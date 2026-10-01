@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🖐️</text></svg>" />
+<title>实时 AR 互动特效 · 手势魔法画布</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: #000; overflow: hidden; font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+  #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #gl { display: block; }
+  /* 摄像头视频元素：隐藏，仅作纹理源 */
+  #cam { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+  /* 顶部标题 */
+  #title {
+    position: fixed; top: 4%; left: 0; right: 0; text-align: center;
+    font-size: clamp(22px, 5vw, 40px); font-weight: 800; letter-spacing: 2px;
+    color: #fff; text-shadow: 0 2px 12px rgba(0,0,0,.6), 0 0 2px rgba(0,0,0,.9);
+    pointer-events: none; user-select: none; z-index: 5;
+  }
+  #title small { display:block; font-size:.42em; font-weight:600; letter-spacing:4px; opacity:.75; margin-top:6px; }
+
+  /* 中央提示 / 加载状态 */
+  #hint {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 16px; text-align: center; color: #fff; z-index: 8;
+    pointer-events: none; transition: opacity .4s ease;
+  }
+  #hint .big { font-size: clamp(18px, 4vw, 28px); font-weight: 700; }
+  #hint .sub { font-size: clamp(13px, 2.6vw, 16px); opacity: .7; max-width: 80vw; line-height: 1.6; }
+  #hint .spin {
+    width: 44px; height: 44px; border-radius: 50%;
+    border: 3px solid rgba(255,255,255,.2); border-top-color: #e61e28;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .hand-emoji { font-size: 46px; animation: wave 1.6s ease-in-out infinite; }
+  @keyframes wave { 0%,100%{transform:rotate(-8deg)} 50%{transform:rotate(8deg)} }
+
+  /* 错误提示 */
+  #error {
+    position: fixed; inset: 0; display:none; align-items:center; justify-content:center;
+    flex-direction:column; gap:14px; text-align:center; color:#fff; z-index: 20;
+    background: rgba(10,0,0,.85); padding: 30px;
+  }
+  #error .t { font-size: 22px; font-weight: 800; color:#ff5a64; }
+  #error .m { font-size: 15px; opacity:.85; max-width: 560px; line-height:1.7; }
+  #error code { background:#222; padding:2px 8px; border-radius:5px; color:#9fe; }
+
+  /* FPS / 状态 */
+  #stat { position: fixed; top: 8px; left: 10px; font-size: 12px; color: #6f6; opacity:.7;
+          font-family: ui-monospace, Menlo, Consolas, monospace; z-index: 6; pointer-events:none; }
+
+  /* 控制面板 */
+  #panel {
+    position: fixed; right: 12px; bottom: 12px; z-index: 10;
+    background: rgba(18,18,22,.82); backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,.1); border-radius: 14px;
+    padding: 10px 14px 14px; width: 230px; color:#eee; font-size:12px;
+    transition: transform .35s cubic-bezier(.4,0,.2,1), opacity .35s;
+    transform: translateY(0); opacity: .96;
+    max-height: 80vh; overflow-y: auto;
+  }
+  #panel.closed { transform: translateY(calc(100% - 42px)); opacity:.9; overflow:hidden; }
+  #panel h3 { position: sticky; top: 0; background: rgba(18,18,22,.92); }
+  #panel h3 { font-size:13px; font-weight:700; display:flex; align-items:center; justify-content:space-between; cursor:pointer; user-select:none; padding-bottom:8px; }
+  #panel h3 .tog { font-size:11px; opacity:.6; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:9px 0; }
+  .row label { flex:0 0 78px; opacity:.85; }
+  .row input[type=range] { flex:1; accent-color:#e61e28; height:3px; }
+  .row .val { flex:0 0 30px; text-align:right; font-family:ui-monospace,monospace; opacity:.7; }
+  .row.btns { gap:6px; }
+  .row.btns button {
+    flex:1; background:#2a2a32; color:#eee; border:1px solid rgba(255,255,255,.12);
+    border-radius:8px; padding:7px 4px; font-size:11.5px; cursor:pointer;
+  }
+  .row.btns button:hover { background:#3a3a44; }
+  .row.btns button.on { background:#e61e28; border-color:#e61e28; color:#fff; }
+  .credit { position: fixed; bottom: 10px; left: 12px; font-size: 11px; color: rgba(255,255,255,.65); text-shadow: 0 1px 4px rgba(0,0,0,.8); z-index:6; pointer-events:none; }
+  @media (max-width: 760px) { .credit { bottom: 62px; right: 12px; } } /* 手机上避开底部的参数面板 */
+</style>
+</head>
+<body>
+  <div id="stage"><canvas id="gl"></canvas></div>
+  <video id="cam" playsinline muted autoplay></video>
+
+  <div id="title">实时 AR 互动特效<small>手势魔法画布 · MediaPipe + WebGL</small></div>
+  <div id="stat"></div>
+  <div class="credit">复刻自抖音上的一个 TouchDesigner 实时 AR 特效 · 摄像头画面只在你的浏览器里处理，不会上传 · 手部模型：Google MediaPipe（Apache-2.0）</div>
+
+  <div id="hint">
+    <div class="spin" id="spin"></div>
+    <div class="big" id="hintBig">正在加载手部追踪模型…</div>
+    <div class="sub" id="hintSub">首次加载需要从 CDN 下载 Three.js 和 MediaPipe 运行库，请稍候</div>
+  </div>
+
+  <div id="error">
+    <div class="t">😕 无法启动</div>
+    <div class="m" id="errMsg"></div>
+  </div>
+
+  <div id="panel" class="closed">
+    <h3 id="panelHead">🎛 特效参数 <span class="tog">展开 ▲</span></h3>
+    <div class="row"><label>跟随平滑</label><input id="pSmooth" type="range" min="0" max="1" step="0.01" value="0.6"><span class="val" id="vSmooth">0.6</span></div>
+    <div class="row"><label>透明度</label><input id="pAlpha" type="range" min="0.15" max="1" step="0.01" value="0.95"><span class="val" id="vAlpha">0.95</span></div>
+    <div class="row"><label>旋转扭曲</label><input id="pTwist" type="range" min="0" max="4" step="0.01" value="0"><span class="val" id="vTwist">0.0</span></div>
+    <div class="row"><label>旋转变色</label><input id="pHue" type="range" min="0" max="4" step="0.01" value="0.8"><span class="val" id="vHue">0.8</span></div>
+    <div class="row"><label>水平熔化</label><input id="pStretch" type="range" min="0" max="1.5" step="0.01" value="0.08"><span class="val" id="vStretch">0.08</span></div>
+    <div class="row"><label>对比度</label><input id="pContrast" type="range" min="0.5" max="3.5" step="0.01" value="1.4"><span class="val" id="vContrast">1.4</span></div>
+    <div class="row"><label>风格强度</label><input id="pMix" type="range" min="0" max="1" step="0.01" value="0.85"><span class="val" id="vMix">0.85</span></div>
+    <div class="row"><label>色阶</label><input id="pLevels" type="range" min="2" max="12" step="1" value="6"><span class="val" id="vLevels">6</span></div>
+    <div class="row"><label>网点密度</label><input id="pHalf" type="range" min="20" max="160" step="1" value="80"><span class="val" id="vHalf">80</span></div>
+    <div class="row"><label>故障感</label><input id="pGlitch" type="range" min="0" max="2" step="0.01" value="0.12"><span class="val" id="vGlitch">0.12</span></div>
+    <div class="row"><label>网格精度</label><input id="pSeg" type="range" min="8" max="80" step="1" value="44"><span class="val" id="vSeg">44</span></div>
+    <div class="row btns">
+      <button id="bMirror" class="on">镜像</button>
+      <button id="bMarker" class="on">标记</button>
+      <button id="bBg" class="on">背景</button>
+      <button id="bDots">网点</button>
+    </div>
+  </div>
+
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs"
+  }
+}
+</script>
+
+<script>
+  // 如果 CDN 上的模块加载失败，下面的 module 脚本根本不会运行，这里给出提示而不是一直转圈
+  setTimeout(function () {
+    if (!window.__arModuleLoaded) document.getElementById('hintSub').textContent = '加载超时：可能是网络无法访问 jsDelivr CDN，请换个网络或稍后刷新重试';
+  }, 25000);
+</script>
+<script type="module">
+window.__arModuleLoaded = true;
+import * as THREE from 'three';
+import { HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
+
+/* ============================================================
+ *  实时 AR 互动特效 —— 手势魔法画布
+ *  原理：MediaPipe 追踪双手 → 取每只手的食指尖(8)与小指尖(20)作为
+ *        四边形画布的四角 → 画布上用着色器把摄像头画面风格化
+ *        (色调分离 + 热力图色彩 + 半色调网点 + 故障/色散)
+ * ============================================================ */
+
+const dom = {
+  cam:   document.getElementById('cam'),
+  glcv:  document.getElementById('gl'),
+  hint:  document.getElementById('hint'),
+  hintBig: document.getElementById('hintBig'),
+  hintSub: document.getElementById('hintSub'),
+  spin:  document.getElementById('spin'),
+  err:   document.getElementById('error'),
+  errMsg:document.getElementById('errMsg'),
+  stat:  document.getElementById('stat'),
+};
+
+function showError(title, msg) {
+  dom.err.style.display = 'flex';
+  dom.err.querySelector('.t').textContent = title;
+  dom.errMsg.innerHTML = msg;
+  dom.hint.style.display = 'none';
+  console.error(title, msg);
+}
+
+/* ---------- 可调参数 ---------- */
+const params = {
+  mix: 0.85, levels: 6, halftone: 80, glitch: 0.12, segments: 44,
+  twist: 0.0, opacity: 0.95, stretch: 0.08, smooth: 0.6, hueRot: 0.8, contrast: 1.4,
+  mirror: true, marker: true, bg: true, dots: false,
+};
+
+/* ============================================================
+ *  1) 摄像头
+ * ============================================================ */
+let camStream = null;
+async function startCamera() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error('NO_GETUSERMEDIA');
+  }
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
+  } catch (e) {
+    throw new Error('CAM_DENIED:' + e.name);
+  }
+  // 拿到流之后任一步出错都要停掉轨道，否则摄像头指示灯一直亮、用户困惑
+  try {
+    dom.cam.srcObject = camStream;
+    await new Promise((res) => { dom.cam.onloadedmetadata = () => res(); });
+    await dom.cam.play();
+  } catch (e) {
+    stopCamera();
+    throw new Error('CAM_PLAY:' + (e.name || e.message || e));
+  }
+  return { w: dom.cam.videoWidth || 1280, h: dom.cam.videoHeight || 720 };
+}
+
+function stopCamera() {
+  if (camStream) { camStream.getTracks().forEach((t) => t.stop()); camStream = null; }
+}
+
+/* ============================================================
+ *  2) MediaPipe 手部追踪
+ * ============================================================ */
+async function createHandLandmarker() {
+  const vision = await FilesetResolver.forVisionTasks(
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+  );
+  return await HandLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath:
+        './hand_landmarker.task', // 官方 float16/1 模型的本地副本（国内访问不了 storage.googleapis.com）
+      delegate: 'GPU',
+    },
+    runningMode: 'VIDEO',
+    numHands: 2,
+    // 放宽置信度：双手离远/靠近画面边缘变小时也能更稳地保持追踪，减少掉帧
+    minHandDetectionConfidence: 0.15,
+    minHandPresenceConfidence: 0.15,
+    minTrackingConfidence: 0.15,
+  });
+}
+
+/* ============================================================
+ *  3) WebGL / Three.js 场景
+ * ============================================================ */
+
+// 着色器：把摄像头画面风格化后贴到可变形画布上
+const PLANE_VERT = /* glsl */`
+  varying vec2 vUv;
+  varying vec2 vScreen;   // 本片元在屏幕上的位置(0..1)，用于"滤镜式"采样所覆盖区域
+  void main() {
+    vUv = uv;
+    vec4 p = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    vScreen = p.xy * 0.5 + 0.5;   // 正交相机 w=1：NDC -> [0,1]
+    gl_Position = p;
+  }
+`;
+
+const PLANE_FRAG = /* glsl */`
+  precision highp float;
+  varying vec2 vUv;
+  varying vec2 vScreen;
+  uniform sampler2D uCamera;
+  uniform vec2  uCanvasCenter; // 画布中心的屏幕位置(0..1)，swirl 绕此点
+  uniform float uAspect;       // 画面宽高比，用于 swirl 圆度校正
+  uniform float uTime;
+  uniform float uOpacity;
+  uniform float uLevels;
+  uniform float uHalftone;
+  uniform float uMix;
+  uniform float uMirror;
+  uniform float uGlitch;
+  uniform float uTwist;   // 旋转扭曲强度
+  uniform float uAlpha;   // 画布整体透明度
+  uniform float uStretch; // 水平熔化拖尾强度
+  uniform float uRotate;  // 画布当前旋转角(弧度，由双手姿态算出)
+  uniform float uHueRot;  // "旋转变色"强度：旋转角 -> 色相偏移的倍率
+  uniform float uContrast;// 对比度：把亮部推向白、暗部推向蓝(还原原视频的高反差观感)
+  uniform float uMidL;    // 画面平均亮度(自适应曝光中心)：让任何光线下都呈均衡的蓝->绿->黄->白
+  uniform float uDots;    // 半色调红网点开关 (1 开 / 0 关)
+
+  // 绕亮度轴旋转色相 (Rodrigues 旋转)，a 为弧度
+  vec3 hueShift(vec3 c, float a) {
+    const vec3 k = vec3(0.57735026); // 1/sqrt(3)
+    float ca = cos(a), sa = sin(a);
+    return c * ca + cross(k, c) * sa + k * dot(k, c) * (1.0 - ca);
+  }
+
+  // 热力图色带：深蓝 -> 蓝 -> 绿 -> 黄 -> 白
+  vec3 ramp(float t) {
+    t = clamp(t, 0.0, 1.0);
+    vec3 c0 = vec3(0.04, 0.10, 0.45);
+    vec3 c1 = vec3(0.10, 0.35, 0.85);
+    vec3 c2 = vec3(0.10, 0.80, 0.35);
+    vec3 c3 = vec3(0.97, 0.90, 0.20);
+    vec3 c4 = vec3(1.00, 1.00, 1.00);
+    if (t < 0.25) return mix(c0, c1, t / 0.25);
+    if (t < 0.50) return mix(c1, c2, (t - 0.25) / 0.25);
+    if (t < 0.75) return mix(c2, c3, (t - 0.50) / 0.25);
+    return mix(c3, c4, (t - 0.75) / 0.25);
+  }
+  float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+  float hash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
+  vec3 hsv2rgb(vec3 c) {
+    vec3 p = abs(fract(c.xxx + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+    return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
+  }
+
+  void main() {
+    // ===== 滤镜式采样：画布显示它【所覆盖的屏幕区域】的实时画面(与背景对齐) =====
+    // 不是把整帧塞进画布，而是像一块玻璃滤镜，透出后面正在发生的实时场景。
+    float mdir = mix(1.0, -1.0, uMirror);
+    vec2 s = vScreen;                                   // 本片元的实际屏幕位置
+
+    // 旋转扭曲 (swirl)：绕画布中心旋转采样坐标(屏幕空间, aspect 校正成圆)
+    vec2 cen = (s - uCanvasCenter) * vec2(uAspect, 1.0);
+    float rad = length(cen);
+    float ang = uTwist * (0.6 - rad) * 2.2 + uTime * 0.25 * min(uTwist, 1.0);
+    float cs = cos(ang), sn = sin(ang);
+    cen = mat2(cs, -sn, sn, cs) * cen;
+    s = uCanvasCenter + cen * vec2(1.0 / uAspect, 1.0);
+
+    // datamosh：按屏幕行做水平错位
+    float rows = mix(60.0, 170.0, clamp(uGlitch * 0.5, 0.0, 1.0));
+    float row = floor(s.y * rows);
+    s.x += (hash(vec2(row, floor(uTime * 3.0))) - 0.5) * 0.05 * uGlitch * mdir;
+
+    // 最终镜像对齐背景后采样实时相机
+    vec2 cuv = vec2(mix(s.x, 1.0 - s.x, uMirror), s.y);
+    float ca = (0.0015 + 0.004 * uGlitch) * mdir;
+    vec3 cam;
+    cam.r = texture2D(uCamera, cuv + vec2(ca, 0.0)).r;
+    cam.g = texture2D(uCamera, cuv).g;
+    cam.b = texture2D(uCamera, cuv - vec2(ca, 0.0)).b;
+
+    // 水平熔化拖尾
+    float bl = luma(cam);
+    for (int i = 1; i <= 6; i++) {
+      float off = (float(i) / 6.0) * 0.045 * uStretch * mdir;
+      vec3 sp = texture2D(uCamera, cuv - vec2(off, 0.0)).rgb;
+      float sl = luma(sp);
+      if (sl > bl + 0.04) { bl = sl; cam = sp; }
+    }
+
+    // Three 会把纹理解码到线性空间，这里转回显示空间(sRGB)，让亮度与肉眼一致，
+    // 高反差才能把人脸正确推到"白"，得到原视频的观感。
+    cam = pow(max(cam, vec3(0.0)), vec3(0.4545));
+
+    float l = luma(cam);
+    // 自适应曝光高反差：以画面平均亮度(uMidL)为中心，输出中心略偏暗(0.46)，
+    // 这样任何光线下都得到 暗->蓝 / 中->绿 / 亮->黄 / 最亮->白 的均衡冷调分布。
+    l = clamp((l - uMidL) * uContrast + 0.46, 0.0, 1.0);
+
+    // 色调分离 (posterize)：对称量化，保证 lq∈[0,1]，保留黄→白层次
+    float lv = max(uLevels, 2.0);
+    float lq = floor(l * (lv - 1.0) + 0.5) / (lv - 1.0);
+    // ===== 严格按原视频实测配色：黑 -> 蓝 -> 浅蓝 -> 白 的渐变映射 =====
+    // 实测色: 暗≈(27,28,33)  蓝≈(28,92,140)  浅蓝≈(185,206,223)  白≈(233,239,246)。
+    // 任一时刻是「黑->单一饱和色->白」(大量白)；该饱和色随时间/旋转循环(蓝->绿->黄...)。
+    vec3 g0 = vec3(0.105, 0.110, 0.130);   // 暗
+    vec3 g1 = vec3(0.110, 0.360, 0.550);   // 蓝 (28,92,140)
+    vec3 g2 = vec3(0.660, 0.745, 0.820);   // 浅蓝灰
+    vec3 g3 = vec3(0.945, 0.955, 0.965);   // 白
+    vec3 base;
+    if (lq < 0.34)      base = mix(g0, g1, lq / 0.34);
+    else if (lq < 0.67) base = mix(g1, g2, (lq - 0.34) / 0.33);
+    else                base = mix(g2, g3, (lq - 0.67) / 0.33);
+    // 配色：以【双手旋转角度】为主驱动 —— 不转时颜色稳定，转手就在 蓝->绿->黄 间变化。
+    // (uRotate=画布倾角, 由双手姿态算出; uHueRot=灵敏度滑杆; 负方向=蓝->绿->黄)
+    float cyc = -uRotate * uHueRot * 1.7              // 旋转双手 -> 主导变色
+              - uTime * 0.05 * min(uTwist, 1.0);      // 开启扭曲时随时间转(次要)
+    cyc = clamp(cyc, -3.1, 1.0);                      // 锁定范围, 不跑到紫/品红等原视频没有的色
+    vec3 styl = hueShift(base, cyc);                  // 白/黑不变, 仅中间饱和色相旋转
+    styl = mix(vec3(luma(styl)), styl, 0.85);         // 轻微去饱和, 让滤镜更精致不过曝
+
+    // 半色调红点：基于屏幕像素坐标布点，任意变形姿态下都是正圆；亮部平滑浮现
+    float period = max(2.0, 800.0 / uHalftone);
+    vec2 cell = fract(gl_FragCoord.xy / period) - 0.5;
+    float d = length(cell);
+    float appear = smoothstep(0.88, 0.99, l); // 只在最亮的高光区出现红网点(其余保持干净白/黄)
+    float r = 0.40 * appear;
+    float aa = clamp(1.5 / period, 0.01, 0.25);
+    float dotMask = (1.0 - smoothstep(r - aa, r + aa, d)) * appear;
+    vec3 col = mix(styl, vec3(0.90, 0.12, 0.16), dotMask * uDots);
+
+    // 画布边缘的白色融化感（用画布自身参数坐标 vUv，描出画布的白边框）
+    float edge = smoothstep(0.0, 0.05, vUv.x) * smoothstep(0.0, 0.05, 1.0 - vUv.x)
+               * smoothstep(0.0, 0.05, vUv.y) * smoothstep(0.0, 0.05, 1.0 - vUv.y);
+    col = mix(vec3(1.0), col, edge);
+
+    // 与原始画面混合（风格强度）
+    col = mix(cam, col, uMix);
+
+    // 透明度：淡入(uOpacity) × 用户透明度(uAlpha)；暗部仅略透一点，保持画面厚实鲜艳
+    float a = uOpacity * uAlpha * mix(0.9, 1.0, smoothstep(0.0, 0.4, l));
+    gl_FragColor = vec4(col, a);
+  }
+`;
+
+let renderer, scene, camera, videoTex;
+let planeMesh, planeGeo, planeMat, baseUV;
+let bgMesh, bgMat;
+let markers = [];
+let VW = 1280, VH = 720;
+
+// 当前/平滑后的四角 (NDC, x,y in [-1,1])
+const corners = {
+  TL: {x:-0.4,y:0.3}, TR:{x:0.4,y:0.3}, BR:{x:0.4,y:-0.3}, BL:{x:-0.4,y:-0.3},
+};
+const cornersS = JSON.parse(JSON.stringify(corners)); // smoothed
+let planeOpacity = 0;       // 当前画布透明度（淡入淡出）
+let targetOpacity = 0;
+
+/* ---------- One-Euro 滤波器：手势追踪去抖动的业界标准 ----------
+ * 慢速移动时强力平滑（去抖），快速移动时几乎不平滑（不拖延），
+ * 比固定系数的 lerp 稳得多。 */
+class OneEuro {
+  constructor(minCutoff = 1.7, beta = 0.06, dCutoff = 1.0) {
+    this.minCutoff = minCutoff; this.beta = beta; this.dCutoff = dCutoff;
+    this.xPrev = 0; this.dxPrev = 0; this.init = false;
+  }
+  _alpha(cutoff, dt) { const tau = 1 / (2 * Math.PI * cutoff); return 1 / (1 + tau / dt); }
+  filter(x, dt) {
+    if (!this.init) { this.xPrev = x; this.dxPrev = 0; this.init = true; return x; }
+    const dx = (x - this.xPrev) / dt;
+    const edx = this.dxPrev + this._alpha(this.dCutoff, dt) * (dx - this.dxPrev);
+    const cutoff = this.minCutoff + this.beta * Math.abs(edx);
+    const xf = this.xPrev + this._alpha(cutoff, dt) * (x - this.xPrev);
+    this.xPrev = xf; this.dxPrev = edx; return xf;
+  }
+}
+const mkPair = () => ({ x: new OneEuro(), y: new OneEuro() });
+const cf = { TL: mkPair(), TR: mkPair(), BR: mkPair(), BL: mkPair() };
+function resetCornerFilters() { for (const k in cf) { cf[k].x.init = false; cf[k].y.init = false; } }
+let lastFilterT = performance.now();
+
+function makeMarkerTexture() {
+  const s = 64, cv = document.createElement('canvas');
+  cv.width = cv.height = s;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, s, s);
+  ctx.fillStyle = 'rgba(228,30,40,0.95)';
+  const n = 7, pad = 5, cell = (s - pad * 2) / n, dot = cell * 0.58;
+  for (let i = 0; i < n; i++)
+    for (let j = 0; j < n; j++)
+      ctx.fillRect(pad + i * cell, pad + j * cell, dot, dot);
+  const t = new THREE.CanvasTexture(cv);
+  t.minFilter = THREE.LinearFilter;
+  return t;
+}
+
+function initThree(vw, vh) {
+  VW = vw; VH = vh;
+  renderer = new THREE.WebGLRenderer({ canvas: dom.glcv, antialias: true, alpha: false });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setClearColor(0x000000, 1);
+
+  scene = new THREE.Scene();
+  // 正交相机，世界坐标 = NDC [-1,1]
+  camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -10, 10);
+  camera.position.z = 1;
+
+  // 摄像头纹理（背景与画布共用一张，避免克隆 VideoTexture 的兼容问题）
+  videoTex = new THREE.VideoTexture(dom.cam);
+  videoTex.minFilter = THREE.LinearFilter;
+  videoTex.magFilter = THREE.LinearFilter;
+  videoTex.generateMipmaps = false;
+  videoTex.colorSpace = THREE.SRGBColorSpace;
+  videoTex.wrapS = THREE.RepeatWrapping;
+  // 背景镜像：通过 uv 变换实现（只作用于使用 .map 的 MeshBasicMaterial，
+  // 画布的自定义着色器直接采样 uCamera，不受 repeat/offset 影响，自行用 uMirror 镜像）
+  videoTex.repeat.x = -1; videoTex.offset.x = 1;
+  bgMat = new THREE.MeshBasicMaterial({ map: videoTex, depthTest: false, depthWrite: false });
+  bgMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), bgMat);
+  bgMesh.frustumCulled = false; bgMesh.renderOrder = 0;
+  scene.add(bgMesh);
+
+  // 可变形画布
+  buildPlane(params.segments);
+
+  // 指尖红色网点标记（四角各一）
+  const mtex = makeMarkerTexture();
+  for (let i = 0; i < 4; i++) {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: mtex, transparent: true, depthTest: false, depthWrite: false,
+    }));
+    sp.scale.set(0.085, 0.085, 1);
+    sp.renderOrder = 3;
+    sp.visible = false;
+    scene.add(sp);
+    markers.push(sp);
+  }
+
+  resize();
+  window.addEventListener('resize', resize);
+  window.addEventListener('pagehide', cleanup);
+}
+
+// 页面卸载时释放摄像头与 GL 资源（避免摄像头指示灯常亮）
+function cleanup() {
+  stopCamera();
+  window.removeEventListener('resize', resize);
+  try { renderer && renderer.dispose(); } catch (_) {}
+}
+
+function buildPlane(seg) {
+  if (planeMesh) { scene.remove(planeMesh); planeGeo.dispose(); }
+  planeGeo = new THREE.PlaneGeometry(2, 2, seg, seg);
+  baseUV = planeGeo.attributes.uv.array.slice();
+  if (!planeMat) {
+    planeMat = new THREE.ShaderMaterial({
+      vertexShader: PLANE_VERT,
+      fragmentShader: PLANE_FRAG,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide, // 手翻到反面时背面三角形也要显示，不被剔除
+      uniforms: {
+        uCamera:   { value: videoTex },
+        uTime:     { value: 0 },
+        uOpacity:  { value: 0 },
+        uLevels:   { value: params.levels },
+        uHalftone: { value: params.halftone },
+        uMix:      { value: params.mix },
+        uMirror:   { value: params.mirror ? 1 : 0 },
+        uGlitch:   { value: params.glitch },
+        uTwist:    { value: params.twist },
+        uAlpha:    { value: params.opacity },
+        uStretch:  { value: params.stretch },
+        uRotate:   { value: 0 },
+        uHueRot:   { value: params.hueRot },
+        uContrast: { value: params.contrast },
+        uMidL:     { value: 0.5 },
+        uDots:     { value: params.dots ? 1 : 0 },
+        uCanvasCenter: { value: new THREE.Vector2(0.5, 0.5) },
+        uAspect:   { value: VW / VH },
+      },
+    });
+  }
+  planeMesh = new THREE.Mesh(planeGeo, planeMat);
+  planeMesh.frustumCulled = false;
+  planeMesh.renderOrder = 2;
+  scene.add(planeMesh);
+}
+
+function resize() {
+  // 画布按视频宽高比适配窗口（contain），居中黑边
+  const winW = window.innerWidth, winH = window.innerHeight;
+  const vidAspect = VW / VH, winAspect = winW / winH;
+  let w, h;
+  if (winAspect > vidAspect) { h = winH; w = h * vidAspect; }
+  else { w = winW; h = w / vidAspect; }
+  renderer.setSize(w, h, true);
+  dom.glcv.style.width = w + 'px';
+  dom.glcv.style.height = h + 'px';
+}
+
+// 归一化坐标 [0,1] -> NDC [-1,1]，按需镜像
+function toNDC(lm) {
+  const nx = params.mirror ? (1 - lm.x) : lm.x;
+  return { x: nx * 2 - 1, y: (1 - lm.y) * 2 - 1 };
+}
+
+let lastTwoHandsT = 0;
+const HAND_GRACE_MS = 350; // 某只手短暂丢失的宽限期：期间保持画布，避免一闪一抽
+function updateCornersFromHands(handsLandmarks) {
+  const now = performance.now();
+  if (!handsLandmarks || handsLandmarks.length < 2) {
+    // 宽限期内沿用上一帧的角(画布稳住不动)；超过才真正淡出，吸收双手离远时的偶发掉帧
+    if (now - lastTwoHandsT > HAND_GRACE_MS) {
+      targetOpacity = 0;
+      resetCornerFilters();
+    }
+    return;
+  }
+  lastTwoHandsT = now;
+  targetOpacity = 1;
+  const a = { index: toNDC(handsLandmarks[0][8]), pinky: toNDC(handsLandmarks[0][20]) };
+  const b = { index: toNDC(handsLandmarks[1][8]), pinky: toNDC(handsLandmarks[1][20]) };
+  // 用「空间连续性」决定左右：哪只手离上一帧的左上角更近就当左手。
+  // 这样即使两手食指 x 接近，也不会像绝对排序那样逐帧翻转导致画布抖动/自交，
+  // 也避开了 MediaPipe handedness 在镜像显示下左右标签易反的坑。
+  const refLeftX = cornersS.TL.x;
+  const aIsLeft = Math.abs(a.index.x - refLeftX) <= Math.abs(b.index.x - refLeftX);
+  const L = aIsLeft ? a : b;
+  const R = aIsLeft ? b : a;
+  // 四角：左手食指=左上, 左手小指=左下, 右手食指=右上, 右手小指=右下
+  corners.TL = L.index; corners.BL = L.pinky;
+  corners.TR = R.index; corners.BR = R.pinky;
+}
+
+function applyDeform() {
+  // One-Euro 平滑：用真实帧间隔 dt，按"跟随平滑"滑杆调最小截止频率
+  const tnow = performance.now();
+  let dt = (tnow - lastFilterT) / 1000; lastFilterT = tnow;
+  if (!(dt > 0) || dt > 0.1) dt = 1 / 60;
+  const minCut = 8.0 - params.smooth * 7.2; // 平滑0->8(灵敏) 平滑1->0.8(很稳)
+  for (const k in cf) { cf[k].x.minCutoff = minCut; cf[k].y.minCutoff = minCut; }
+  cornersS.TL.x = cf.TL.x.filter(corners.TL.x, dt); cornersS.TL.y = cf.TL.y.filter(corners.TL.y, dt);
+  cornersS.TR.x = cf.TR.x.filter(corners.TR.x, dt); cornersS.TR.y = cf.TR.y.filter(corners.TR.y, dt);
+  cornersS.BR.x = cf.BR.x.filter(corners.BR.x, dt); cornersS.BR.y = cf.BR.y.filter(corners.BR.y, dt);
+  cornersS.BL.x = cf.BL.x.filter(corners.BL.x, dt); cornersS.BL.y = cf.BL.y.filter(corners.BL.y, dt);
+
+  const { TL, TR, BR, BL } = cornersS;
+
+  // 画布旋转角：上、下两条横边的平均朝向。双手一起转动 -> 角度变化 -> 驱动旋转变色。
+  const ex = (TR.x - TL.x) + (BR.x - BL.x);
+  const ey = (TR.y - TL.y) + (BR.y - BL.y);
+  planeMat.uniforms.uRotate.value = Math.atan2(ey, ex);
+  // 画布中心的屏幕位置(0..1)：滤镜采样/旋转扭曲的中心
+  planeMat.uniforms.uCanvasCenter.value.set(
+    ((TL.x + TR.x + BR.x + BL.x) / 4) * 0.5 + 0.5,
+    ((TL.y + TR.y + BR.y + BL.y) / 4) * 0.5 + 0.5
+  );
+
+  const pos = planeGeo.attributes.position;
+  const n = pos.count;
+  for (let i = 0; i < n; i++) {
+    const u = baseUV[i * 2], v = baseUV[i * 2 + 1]; // v=1 顶, v=0 底
+    const topX = TL.x * (1 - u) + TR.x * u;
+    const topY = TL.y * (1 - u) + TR.y * u;
+    const botX = BL.x * (1 - u) + BR.x * u;
+    const botY = BL.y * (1 - u) + BR.y * u;
+    const x = botX * (1 - v) + topX * v;
+    const y = botY * (1 - v) + topY * v;
+    pos.setXY(i, x, y);
+  }
+  pos.needsUpdate = true;
+
+  // 更新四角标记
+  const cs = [TL, TR, BR, BL];
+  for (let i = 0; i < 4; i++) {
+    markers[i].visible = params.marker && planeOpacity > 0.05;
+    markers[i].position.set(cs[i].x, cs[i].y, 0.2);
+    markers[i].material.opacity = planeOpacity;
+  }
+}
+
+/* ============================================================
+ *  4) 主循环
+ * ============================================================ */
+let handLandmarker = null;
+let lastVideoTime = -1;
+let lastHands = null;
+let fpsT = performance.now(), fpsN = 0, fps = 0;
+let lastWarnT = 0;
+
+// 自适应曝光：把视频缩到极小尺寸算平均亮度(显示空间)，作为高反差的中心点
+const expoCv = document.createElement('canvas');
+expoCv.width = 32; expoCv.height = 18;
+const expoCtx = expoCv.getContext('2d', { willReadFrequently: true });
+let sceneMid = 0.5, expoFrame = 0;
+function updateExposure() {
+  if (dom.cam.readyState < 2) return;
+  if ((expoFrame++ % 3) !== 0) return; // 每 3 帧算一次足够
+  try {
+    expoCtx.drawImage(dom.cam, 0, 0, 32, 18);
+    const d = expoCtx.getImageData(0, 0, 32, 18).data;
+    let sum = 0;
+    for (let i = 0; i < d.length; i += 4) sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    const mean = sum / (d.length / 4) / 255;
+    sceneMid += (mean - sceneMid) * 0.1;                 // 平滑，避免闪烁
+    sceneMid = Math.min(0.8, Math.max(0.2, sceneMid));   // 限幅，保证高反差始终有效
+  } catch (e) { /* 视频尚未就绪 */ }
+}
+
+function loop() {
+  requestAnimationFrame(loop);
+  const now = performance.now();
+
+  // 手部检测（仅当视频帧更新时）
+  if (handLandmarker && dom.cam.readyState >= 2 && dom.cam.currentTime !== lastVideoTime) {
+    lastVideoTime = dom.cam.currentTime;
+    try {
+      const res = handLandmarker.detectForVideo(dom.cam, now);
+      lastHands = (res && res.landmarks && res.landmarks.length) ? res.landmarks : null;
+    } catch (e) {
+      // 偶发检测异常不应中断渲染；节流打印以便排查
+      if (now - lastWarnT > 2000) { console.warn('detectForVideo failed:', e); lastWarnT = now; }
+    }
+  }
+  updateCornersFromHands(lastHands);
+
+  // 画布淡入淡出
+  planeOpacity += (targetOpacity - planeOpacity) * 0.12;
+  applyDeform();
+
+  // 提示显隐（区分 0 / 1 只手，给渐进引导）
+  if (handLandmarker) {
+    if (planeOpacity < 0.15) {
+      const hc = lastHands ? lastHands.length : 0;
+      if (hc === 1) showHint('再举起另一只手 ✋', '已检测到 1 只手，双手一起才能撑开魔法画布', false);
+      else showHint('举起双手 ✋✋', '双手食指与小指张开，撑起一张会变形的魔法画布', false);
+    } else dom.hint.style.opacity = '0';
+  }
+
+  // 更新 uniforms
+  planeMat.uniforms.uTime.value = now * 0.001;
+  planeMat.uniforms.uOpacity.value = planeOpacity;
+  planeMat.uniforms.uMix.value = params.mix;
+  planeMat.uniforms.uLevels.value = params.levels;
+  planeMat.uniforms.uHalftone.value = params.halftone;
+  planeMat.uniforms.uGlitch.value = params.glitch;
+  planeMat.uniforms.uTwist.value = params.twist;
+  planeMat.uniforms.uAlpha.value = params.opacity;
+  planeMat.uniforms.uStretch.value = params.stretch;
+  planeMat.uniforms.uHueRot.value = params.hueRot;
+  planeMat.uniforms.uContrast.value = params.contrast;
+  planeMat.uniforms.uDots.value = params.dots ? 1 : 0;
+  updateExposure();
+  planeMat.uniforms.uMidL.value = sceneMid;
+  planeMat.uniforms.uMirror.value = params.mirror ? 1 : 0;
+  bgMesh.visible = params.bg;
+  // 背景镜像跟随开关
+  videoTex.repeat.x = params.mirror ? -1 : 1;
+  videoTex.offset.x = params.mirror ? 1 : 0;
+  if (dom.cam.readyState >= 2) videoTex.needsUpdate = true; // 确保画布滤镜用的是最新帧
+
+  renderer.render(scene, camera);
+
+  // FPS
+  fpsN++;
+  if (now - fpsT > 500) { fps = Math.round((fpsN * 1000) / (now - fpsT)); fpsN = 0; fpsT = now; }
+  const handCount = lastHands ? lastHands.length : 0;
+  dom.stat.textContent = `${fps} FPS · 手 ${handCount}`;
+}
+
+let hintLocked = false;
+function showHint(big, sub, spin) {
+  dom.hint.style.opacity = '1';
+  dom.hintBig.textContent = big;
+  dom.hintSub.textContent = sub;
+  dom.spin.style.display = spin ? 'block' : 'none';
+}
+
+/* ============================================================
+ *  5) 控制面板
+ * ============================================================ */
+function bindUI() {
+  const link = (id, key, valId, fmt = (x) => x, isInt = false) => {
+    const el = document.getElementById(id), v = document.getElementById(valId);
+    const upd = () => {
+      params[key] = isInt ? parseInt(el.value) : parseFloat(el.value);
+      v.textContent = fmt(params[key]);
+    };
+    el.addEventListener('input', upd); upd();
+  };
+  link('pSmooth', 'smooth', 'vSmooth', (x) => x.toFixed(2));
+  link('pAlpha', 'opacity', 'vAlpha', (x) => x.toFixed(2));
+  link('pTwist', 'twist', 'vTwist', (x) => x.toFixed(1));
+  link('pHue', 'hueRot', 'vHue', (x) => x.toFixed(1));
+  link('pStretch', 'stretch', 'vStretch', (x) => x.toFixed(2));
+  link('pContrast', 'contrast', 'vContrast', (x) => x.toFixed(1));
+  link('pMix', 'mix', 'vMix', (x) => x.toFixed(2));
+  link('pLevels', 'levels', 'vLevels', (x) => x, true);
+  link('pHalf', 'halftone', 'vHalf', (x) => x, true);
+  link('pGlitch', 'glitch', 'vGlitch', (x) => x.toFixed(2));
+  const segEl = document.getElementById('pSeg'), segV = document.getElementById('vSeg');
+  segEl.addEventListener('change', () => {
+    params.segments = parseInt(segEl.value); segV.textContent = params.segments;
+    buildPlane(params.segments);
+  });
+  segEl.addEventListener('input', () => { segV.textContent = segEl.value; });
+
+  const toggle = (id, key) => {
+    const b = document.getElementById(id);
+    b.addEventListener('click', () => {
+      params[key] = !params[key];
+      b.classList.toggle('on', params[key]);
+    });
+  };
+  toggle('bMirror', 'mirror');
+  toggle('bMarker', 'marker');
+  toggle('bBg', 'bg');
+  toggle('bDots', 'dots');
+
+  const panel = document.getElementById('panel'), head = document.getElementById('panelHead');
+  head.addEventListener('click', () => {
+    panel.classList.toggle('closed');
+    head.querySelector('.tog').textContent = panel.classList.contains('closed') ? '展开 ▲' : '收起 ▼';
+  });
+}
+
+/* ============================================================
+ *  启动
+ * ============================================================ */
+async function main() {
+  bindUI();
+  try {
+    showHint('正在请求摄像头…', '请在浏览器弹窗中允许使用摄像头', true);
+    const { w, h } = await startCamera();
+
+    showHint('正在加载手部追踪模型…', '首次加载需要从 CDN 下载 Three.js 和 MediaPipe 运行库，请稍候', true);
+    initThree(w, h);
+    loop(); // 先把画面跑起来（背景已可见）
+
+    handLandmarker = await createHandLandmarker();
+    showHint('举起双手 ✋✋', '双手食指与小指张开，撑起一张会变形的魔法画布', false);
+  } catch (e) {
+    const msg = String(e.message || e);
+    if (msg.startsWith('CAM_DENIED')) {
+      showError('需要摄像头权限',
+        '浏览器拒绝了摄像头访问。请点击地址栏的摄像头图标允许访问，然后刷新页面。<br><br>' +
+        '错误：<code>' + msg.replace('CAM_DENIED:', '') + '</code>');
+    } else if (msg.startsWith('CAM_PLAY')) {
+      showError('摄像头无法播放',
+        '已获得摄像头授权，但视频无法启动（可能被其他程序占用或设备异常）。' +
+        '请关闭占用摄像头的程序后刷新页面。<br><br>' +
+        '错误：<code>' + msg.replace('CAM_PLAY:', '') + '</code>');
+    } else if (msg === 'NO_GETUSERMEDIA') {
+      showError('环境不支持摄像头',
+        '当前浏览器无法使用摄像头。请用系统浏览器（Chrome / Safari / Edge）通过 <code>https</code> 打开，' +
+        '不要用 <code>file://</code> 直接打开本文件。');
+    } else {
+      showError('启动失败',
+        '可能是网络无法访问 CDN（MediaPipe 运行库 / Three.js）。请检查网络后刷新。<br><br>' +
+        '错误：<code>' + msg + '</code>');
+    }
+  }
+}
+
+main();
+</script>
+</body>
+</html>
